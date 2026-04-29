@@ -1,0 +1,104 @@
+# Maintainer: oioi555
+
+# -----------------------------------------------------------------------
+# Naming convention:
+#   pkgname  = openwhispr-vulkan  (hard-depends on vulkan-icd-loader so
+#                                  GPU-accelerated local inference works
+#                                  out of the box on AMD/Intel/NVIDIA)
+#   _appname = OpenWhispr          (upstream asset naming: PascalCase)
+#   Asset:   OpenWhispr-${pkgver}-linux-x64.tar.gz
+# -----------------------------------------------------------------------
+pkgname=openwhispr-vulkan
+_appname=OpenWhispr
+pkgver=1.6.10
+pkgrel=1
+pkgdesc="Voice-to-text dictation app with local Whisper/Parakeet and cloud models (Vulkan GPU inference)"
+arch=('x86_64')
+url="https://github.com/${_appname}/openwhispr"
+license=('MIT')
+depends=(
+    'alsa-lib'
+    'gtk3'
+    'libdrm'
+    'libxss'
+    'libxtst'
+    'mesa'
+    'nss'
+    'vulkan-icd-loader'
+)
+optdepends=(
+    'ydotool: Input automation tool for Wayland paste'
+    'ydotoold: Daemon for ydotool (auto-paste support)'
+    'xclip: Clipboard tool for KDE Wayland paste'
+    'xsel: Alternative clipboard tool for Wayland paste'
+    'wl-clipboard: Wayland clipboard utilities (wl-copy)'
+    'xdotool: X11 automation for paste simulation'
+    'wtype: Wayland input tool for wlroots compositors (Sway, etc.)'
+    'procps-ng: For pidof utility (process detection)'
+    'libpulse: For pactl (audio detection in meetings)'
+    'hyprland: For hyprctl (Hyprland shortcuts)'
+    'qt6-tools: For qdbus/qdbus6 (KDE shortcuts)'
+    'systemd: For journalctl (KDE integration)'
+)
+provides=('openwhispr')
+conflicts=('openwhispr' 'openwhispr-bin')
+options=('!strip')
+
+source=("${_appname}-${pkgver}-linux-x64.tar.gz::https://github.com/${_appname}/openwhispr/releases/download/v${pkgver}/${_appname}-${pkgver}-linux-x64.tar.gz")
+sha256sums=('SKIP')
+# ^ Placeholder: the CI workflow (update-aur.yml) replaces this with
+#   the real SHA-256 via `updpkgsums` every time the version is bumped.
+
+package() {
+    local _installdir="${pkgdir}/opt/${pkgname}"
+
+    # Install the extracted application tree
+    install -dm755 "${_installdir}"
+    cp -a "${srcdir}/${_appname}-linux-x64/." "${_installdir}/"
+
+    # Make the main binary executable (name may vary across releases)
+    if [[ -f "${_installdir}/openwhispr" ]]; then
+        chmod 755 "${_installdir}/openwhispr"
+    elif [[ -f "${_installdir}/${_appname}" ]]; then
+        chmod 755 "${_installdir}/${_appname}"
+    else
+        echo "WARNING: could not locate the main executable under ${_installdir}" >&2
+    fi
+
+    # Wrapper script in PATH
+    install -dm755 "${pkgdir}/usr/bin"
+    cat > "${pkgdir}/usr/bin/openwhispr" <<EOF
+#!/bin/sh
+exec /opt/${pkgname}/openwhispr "\$@"
+EOF
+    chmod 755 "${pkgdir}/usr/bin/openwhispr"
+
+    # .desktop file
+    install -dm755 "${pkgdir}/usr/share/applications"
+    cat > "${pkgdir}/usr/share/applications/${pkgname}.desktop" <<EOF
+[Desktop Entry]
+Name=OpenWhispr
+Comment=Voice-to-text dictation with local and cloud AI models (Vulkan GPU inference)
+Exec=/usr/bin/openwhispr %U
+Icon=openwhispr
+Terminal=false
+Type=Application
+Categories=Utility;AudioVideo;
+Keywords=speech;voice;dictation;transcription;whisper;vulkan;gpu;
+StartupWMClass=openwhispr
+EOF
+
+    # Icons shipped inside the tarball under resources/
+    find "${srcdir}/${_appname}-linux-x64" \
+         -path '*/icons/hicolor/*/apps/*.png' \
+    | while read -r icon; do
+        local rel="${icon#${srcdir}/${_appname}-linux-x64/}"
+        install -Dm644 "$icon" "${pkgdir}/usr/share/${rel}"
+    done
+
+    # License
+    local _license
+    _license=$(find "${srcdir}/${_appname}-linux-x64" -maxdepth 3 -name 'LICENSE*' | head -n1)
+    [[ -n "$_license" ]] && install -Dm644 "$_license" \
+        "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
