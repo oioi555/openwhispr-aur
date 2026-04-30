@@ -1,0 +1,232 @@
+name: Update AUR Packages
+
+on:
+  schedule:
+    - cron: '0 8 * * *'   # daily at 08:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: aur-update
+  cancel-in-progress: false
+
+# Allow the workflow to commit updated PKGBUILDs back to this repository
+permissions:
+  contents: write
+
+# -----------------------------------------------------------------------
+# Required repository secret
+#   AUR_SSH_PRIVATE_KEY   – ed25519 private key whose public half is
+#                           registered on aur.archlinux.org for the
+#                           account that owns both AUR packages.
+# -----------------------------------------------------------------------
+
+jobs:
+  # ── 1. Check whether an update is needed ─────────────────────────────
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      needs_update:     ${{ steps.check.outputs.needs_update }}
+      upstream_version: ${{ steps.check.outputs.upstream_version }}
+      current_version:  ${{ steps.check.outputs.current_version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compare versions
+        id: check
+        run: |
+          fetch_with_retry() {
+            local url="$1"
+            local max_attempts=3
+            local delay=5
+            for i in $(seq 1 $max_attempts); do
+              result=$(curl -fsSL \
+                --retry 2 --retry-delay 3 \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "$url" 2>&1)
+              if [[ $? -eq 0 ]]; then
+                echo "$result"
+                return 0
+              fi
+              [[ $i -lt $max_attempts ]] && sleep $delay && delay=$((delay * 2))
+            done
+            return 1
+          }
+
+          UPSTREAM=$(fetch_with_retry \
+            "https://api.github.com/repos/OpenWhispr/openwhispr/releases/latest" \
+            | jq -r '.tag_name' | sed 's/^v//')
+
+          if [[ -z "$UPSTREAM" || "$UPSTREAM" == "null" ]]; then
+            echo "::error::Failed to fetch upstream version"
+            exit 1
+          fi
+
+          # Read the version from whichever PKGBUILD is tracked in this repo
+          CURRENT=$(grep '^pkgver=' openwhispr-bin/PKGBUILD | cut -d= -f2)
+
+          echo "upstream_version=${UPSTREAM}" >> "$GITHUB_OUTPUT"
+          echo "current_version=${CURRENT}"   >> "$GITHUB_OUTPUT"
+          echo "Upstream: ${UPSTREAM} | This repo: ${CURRENT}"
+
+          if [[ "$CURRENT" == "$UPSTREAM" ]]; then
+            echo "needs_update=false" >> "$GITHUB_OUTPUT"
+            echo "## ⏭️ No update needed — already at ${UPSTREAM}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "needs_update=true" >> "$GITHUB_OUTPUT"
+            echo "## 🔄 Update available: ${CURRENT} → ${UPSTREAM}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ── 2. Update both packages ───────────────────────────────────────────
+  update:
+    needs: check
+    if: needs.check.outputs.needs_update == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Sy --noconfirm \
+            git pacman-contrib openssh sudo curl jq
+
+      - name: Set up unprivileged builder user
+        run: |
+          useradd -m -s /bin/bash builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          mkdir -p /home/builder/.ssh
+          chmod 700 /home/builder/.ssh
+          chown -R builder:builder /home/builder
+
+      - name: Configure AUR SSH access
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > /home/builder/.ssh/aur_key
+          chmod 600 /home/builder/.ssh/aur_key
+          chown builder:builder /home/builder/.ssh/aur_key
+
+          # AUR host key (ed25519)
+          echo "aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN" \
+            >> /home/builder/.ssh/known_hosts
+
+          printf 'Host aur.archlinux.org\n  IdentityFile /home/builder/.ssh/aur_key\n  User aur\n' \
+            >> /home/builder/.ssh/config
+
+          chown builder:builder \
+            /home/builder/.ssh/known_hosts \
+            /home/builder/.ssh/config
+
+      - name: Checkout maintenance repository
+        uses: actions/checkout@v4
+        with:
+          path: /home/builder/repo
+
+      - name: Configure git identity
+        run: |
+          git -C /home/builder/repo config user.name  "AUR Update Bot"
+          git -C /home/builder/repo config user.email "bot@users.noreply.github.com"
+          chown -R builder:builder /home/builder/repo
+
+      # ── Helper: update one package directory ──────────────────────────
+      # Usage: update_pkg <dir> <aur-package-name> <new-version>
+      - name: Update openwhispr-bin
+        env:
+          NEW_VER: ${{ needs.check.outputs.upstream_version }}
+        run: |
+          set -euo pipefail
+          PKG_DIR=/home/builder/repo/openwhispr-bin
+          AUR_PKG=openwhispr-bin
+
+          # 1. Bump version in this repo's PKGBUILD
+          sed -i \
+            "s/^pkgver=.*/pkgver=${NEW_VER}/; s/^pkgrel=.*/pkgrel=1/" \
+            "${PKG_DIR}/PKGBUILD"
+          chown builder:builder "${PKG_DIR}/PKGBUILD"
+
+          # 2. Recalculate checksums + regenerate .SRCINFO
+          sudo -u builder bash -c "cd '${PKG_DIR}' && updpkgsums && makepkg --printsrcinfo > .SRCINFO"
+
+          # 3. Clone the AUR package, apply the same changes, push
+          sudo -u builder git clone \
+            "ssh://aur@aur.archlinux.org/${AUR_PKG}.git" \
+            /home/builder/aur-${AUR_PKG}
+
+          cp "${PKG_DIR}/PKGBUILD"  /home/builder/aur-${AUR_PKG}/PKGBUILD
+          cp "${PKG_DIR}/.SRCINFO"  /home/builder/aur-${AUR_PKG}/.SRCINFO
+
+          AUR_DIR=/home/builder/aur-${AUR_PKG}
+          sudo -u builder git -C "${AUR_DIR}" config user.name  "AUR Update Bot"
+          sudo -u builder git -C "${AUR_DIR}" config user.email "bot@users.noreply.github.com"
+          sudo -u builder git -C "${AUR_DIR}" add PKGBUILD .SRCINFO
+
+          if sudo -u builder git -C "${AUR_DIR}" diff --cached --quiet; then
+            echo "AUR ${AUR_PKG} already at ${NEW_VER}, nothing to push"
+          else
+            sudo -u builder git -C "${AUR_DIR}" commit -m "upgpkg: ${NEW_VER}"
+            sudo -u builder git -C "${AUR_DIR}" push
+          fi
+
+          echo "✅ openwhispr-bin updated to ${NEW_VER}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update openwhispr-vulkan
+        env:
+          NEW_VER: ${{ needs.check.outputs.upstream_version }}
+        run: |
+          set -euo pipefail
+          PKG_DIR=/home/builder/repo/openwhispr-vulkan
+          AUR_PKG=openwhispr-vulkan
+
+          # 1. Bump version in this repo's PKGBUILD
+          sed -i \
+            "s/^pkgver=.*/pkgver=${NEW_VER}/; s/^pkgrel=.*/pkgrel=1/" \
+            "${PKG_DIR}/PKGBUILD"
+          chown builder:builder "${PKG_DIR}/PKGBUILD"
+
+          # 2. Recalculate checksums + regenerate .SRCINFO
+          sudo -u builder bash -c "cd '${PKG_DIR}' && updpkgsums && makepkg --printsrcinfo > .SRCINFO"
+
+          # 3. Clone the AUR package, apply the same changes, push
+          sudo -u builder git clone \
+            "ssh://aur@aur.archlinux.org/${AUR_PKG}.git" \
+            /home/builder/aur-${AUR_PKG}
+
+          cp "${PKG_DIR}/PKGBUILD"  /home/builder/aur-${AUR_PKG}/PKGBUILD
+          cp "${PKG_DIR}/.SRCINFO"  /home/builder/aur-${AUR_PKG}/.SRCINFO
+
+          AUR_DIR=/home/builder/aur-${AUR_PKG}
+          sudo -u builder git -C "${AUR_DIR}" config user.name  "AUR Update Bot"
+          sudo -u builder git -C "${AUR_DIR}" config user.email "bot@users.noreply.github.com"
+          sudo -u builder git -C "${AUR_DIR}" add PKGBUILD .SRCINFO
+
+          if sudo -u builder git -C "${AUR_DIR}" diff --cached --quiet; then
+            echo "AUR ${AUR_PKG} already at ${NEW_VER}, nothing to push"
+          else
+            sudo -u builder git -C "${AUR_DIR}" commit -m "upgpkg: ${NEW_VER}"
+            sudo -u builder git -C "${AUR_DIR}" push
+          fi
+
+          echo "✅ openwhispr-vulkan updated to ${NEW_VER}" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Commit the updated PKGBUILDs back to this maintenance repo ────
+      - name: Commit & push changes to this repository
+        env:
+          NEW_VER: ${{ needs.check.outputs.upstream_version }}
+        run: |
+          cd /home/builder/repo
+
+          git add \
+            openwhispr-bin/PKGBUILD  openwhispr-bin/.SRCINFO \
+            openwhispr-vulkan/PKGBUILD openwhispr-vulkan/.SRCINFO
+
+          if git diff --cached --quiet; then
+            echo "Nothing new to commit to the maintenance repo"
+          else
+            git commit -m "chore: bump both packages to ${NEW_VER}"
+            git push
+          fi
+
+          echo "## ✅ Both packages updated to **${NEW_VER}**" >> "$GITHUB_STEP_SUMMARY"
