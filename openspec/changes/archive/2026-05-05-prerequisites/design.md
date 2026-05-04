@@ -1,6 +1,6 @@
 ## Context
 
-This repository (`openwhispr-aur`) was scaffolded by GitHub Copilot but does not reflect the real, tested AUR packages. The actual working packages live at `~/aur/openwhispr-bin/` and `~/aur/openwhispr-vulkan/`, with the Vulkan variant having been built and verified on a Radeon RX 6650 XT.
+This repository (`openwhispr-aur`) was scaffolded by GitHub Copilot but does not reflect the real, tested AUR packages. The actual working packages live in local tested package trees, with the Vulkan variant having been built and verified on a Radeon RX 6650 XT.
 
 The implementation converges this repository to match the tested package structure, plus adds CI automation for upstream version detection and AUR metadata updates. CI does not try to prove full package builds or runtime GPU behavior.
 
@@ -22,7 +22,7 @@ The implementation converges this repository to match the tested package structu
 
 ### D1: Specs describe the verified working state, not the Copilot template
 
-The PKGBUILDs are written based on the tested packages at `~/aur/openwhispr-vulkan/` and `~/aur/openwhispr-bin/`, not the Copilot-generated template.
+The PKGBUILDs are written based on the tested local package trees, not the Copilot-generated template.
 
 ### D2: `_whisper_cpp_ver` as a separate package variable
 

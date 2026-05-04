@@ -13,6 +13,7 @@
 pkg/
 src/
 .opencode
+.codenomad/
 
 # OpenSpec: exclude active (unarchived) changes, keep archive/
 openspec/changes/*

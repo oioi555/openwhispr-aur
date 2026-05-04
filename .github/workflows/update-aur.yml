@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 # -----------------------------------------------------------------------
 # Required repository secret
@@ -141,6 +141,8 @@ jobs:
     if: needs.check.outputs.needs_update == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
     container:
       image: archlinux:latest
 
@@ -155,7 +157,7 @@ jobs:
         run: |
           set -euo pipefail
           useradd -m -s /bin/bash builder
-          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          echo "builder ALL=(ALL) NOPASSWD: /usr/bin/pacman" >> /etc/sudoers
           mkdir -p /home/builder/.ssh
           chmod 700 /home/builder/.ssh
           chown -R builder:builder /home/builder

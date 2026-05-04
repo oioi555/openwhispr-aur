@@ -1,11 +1,11 @@
 ## 1. openwhispr-bin PKGBUILD
 
-- [x] 1.1 Rewrite `openwhispr-bin/PKGBUILD` based on `~/aur/openwhispr-bin/PKGBUILD`: correct depends, optdepends, source, `package()` with `/opt/openwhispr/` install path, `/usr/bin/openwhispr` launcher with `--no-sandbox`, `.desktop` file, icon from tarball — [req: openwhispr-bin package definition]
+- [x] 1.1 Rewrite `openwhispr-bin/PKGBUILD` based on the tested local package tree: correct depends, optdepends, source, `package()` with `/opt/openwhispr/` install path, `/usr/bin/openwhispr` launcher with `--no-sandbox`, `.desktop` file, icon from tarball — [req: openwhispr-bin package definition]
 - [x] 1.2 Regenerate `openwhispr-bin/.SRCINFO` — placeholder with `sha256sums = SKIP`; CI regenerates via `makepkg --printsrcinfo` after `updpkgsums` — [req: openwhispr-bin package definition]
 
 ## 2. openwhispr-vulkan PKGBUILD
 
-- [x] 2.1 Rewrite `openwhispr-vulkan/PKGBUILD` based on `~/aur/openwhispr-vulkan/PKGBUILD`: dual source (app + whisper.cpp fork), `_whisper_cpp_ver` variable, `makedepends`, `build()` with CMake Vulkan flags, `package()` with binary replacement — [req: openwhispr-vulkan package definition]
+- [x] 2.1 Rewrite `openwhispr-vulkan/PKGBUILD` based on the tested local package tree: dual source (app + whisper.cpp fork), `_whisper_cpp_ver` variable, `makedepends`, `build()` with CMake Vulkan flags, `package()` with binary replacement — [req: openwhispr-vulkan package definition]
 - [x] 2.2 Regenerate `openwhispr-vulkan/.SRCINFO` — placeholder with `sha256sums = SKIP`; CI regenerates via `makepkg --printsrcinfo` after `updpkgsums` — [req: openwhispr-vulkan package definition]
 
 ## 3. CI Workflow
@@ -21,8 +21,8 @@
 ## 5. Verification
 
 - [x] 5.1 Run `openspec validate prerequisites` — all artifacts pass
-- [x] 5.2 Diff `openwhispr-bin/PKGBUILD` against `~/aur/openwhispr-bin/PKGBUILD` — confirm alignment
-- [x] 5.3 Diff `openwhispr-vulkan/PKGBUILD` against `~/aur/openwhispr-vulkan/PKGBUILD` — confirm alignment
+- [x] 5.2 Diff `openwhispr-bin/PKGBUILD` against the tested local package tree — confirm alignment
+- [x] 5.3 Diff `openwhispr-vulkan/PKGBUILD` against the tested local package tree — confirm alignment
 - [x] 5.4 Review CI workflow for completeness against ci-workflow spec
 - [x] 5.5 Confirm no .install files remain in repo or CI workflow
 
