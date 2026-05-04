@@ -182,14 +182,15 @@ jobs:
       - name: Checkout maintenance repository
         uses: actions/checkout@v4
         with:
-          path: /home/builder/repo
+          path: repo
 
       - name: Configure git identity
         run: |
           set -euo pipefail
-          git -C /home/builder/repo config user.name  "AUR Update Bot"
-          git -C /home/builder/repo config user.email "bot@users.noreply.github.com"
-          chown -R builder:builder /home/builder/repo
+          REPO_DIR="${GITHUB_WORKSPACE}/repo"
+          git -C "${REPO_DIR}" config user.name  "AUR Update Bot"
+          git -C "${REPO_DIR}" config user.email "bot@users.noreply.github.com"
+          chown -R builder:builder "${REPO_DIR}"
 
       # ── Update openwhispr-bin (app version only) ────────────────────
       - name: Update openwhispr-bin
@@ -198,7 +199,7 @@ jobs:
           NEW_APP_VER: ${{ needs.check.outputs.upstream_app_version }}
         run: |
           set -euo pipefail
-          PKG_DIR=/home/builder/repo/openwhispr-bin
+          PKG_DIR="${GITHUB_WORKSPACE}/repo/openwhispr-bin"
           AUR_PKG=openwhispr-bin
 
           # 1. Bump pkgver in PKGBUILD
@@ -246,7 +247,7 @@ jobs:
           NEEDS_WHISPER: ${{ needs.check.outputs.needs_update_whisper }}
         run: |
           set -euo pipefail
-          PKG_DIR=/home/builder/repo/openwhispr-vulkan
+          PKG_DIR="${GITHUB_WORKSPACE}/repo/openwhispr-vulkan"
           AUR_PKG=openwhispr-vulkan
 
           # 1. Bump pkgver if app version changed
@@ -311,12 +312,13 @@ jobs:
         run: |
           set -euo pipefail
           sudo -u builder env \
+            REPO_DIR="${GITHUB_WORKSPACE}/repo" \
             NEW_APP_VER="${NEW_APP_VER}" \
             NEW_WHISPER_VER="${NEW_WHISPER_VER}" \
             NEEDS_APP="${NEEDS_APP}" \
             NEEDS_WHISPER="${NEEDS_WHISPER}" \
             bash -c '
-          cd /home/builder/repo
+          cd "${REPO_DIR}"
 
           git add \
             openwhispr-bin/PKGBUILD  openwhispr-bin/.SRCINFO \
