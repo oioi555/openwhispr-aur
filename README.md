@@ -1,40 +1,61 @@
 # openwhispr-aur
 
-AUR maintenance repository for two [OpenWhispr](https://github.com/OpenWhispr/openwhispr) packages.
+AUR maintenance repository for [OpenWhispr](https://github.com/OpenWhispr/openwhispr) packages.
 
 | Package | Description |
 |---|---|
-| [`openwhispr-bin`](./openwhispr-bin/) | Pre-built binary from the upstream tar.gz release. Vulkan is an optional dependency. |
-| [`openwhispr-vulkan`](./openwhispr-vulkan/) | Same binary, but `vulkan-icd-loader` is a **hard** dependency — use this on AMD/Intel/NVIDIA systems where you want GPU-accelerated on-device Whisper/Parakeet inference. |
+| [`openwhispr-bin`](./openwhispr-bin/) | Official pre-built binary. CPU-only whisper.cpp inference. |
+| [`openwhispr-vulkan`](./openwhispr-vulkan/) | Same app, but with a Vulkan-built whisper.cpp that replaces the bundled CPU binary. `vulkan-icd-loader` and `vulkan-driver` are hard dependencies. Packaging now fails if the Vulkan replacement binary is missing, to avoid silently shipping the CPU fallback. |
 
-Both packages `provides=('openwhispr')` and `conflicts` with each other, so only one may be installed at a time.
+Both packages `provides=('openwhispr')` and conflict with each other (and `openwhispr-appimage`), so only one may be installed at a time. Both install the app to `/opt/openwhispr/` for clean switching.
 
 ---
 
 ## Install
 
 ```sh
-# Standard binary (Vulkan optional)
+# CPU binary (no GPU required)
 paru -S openwhispr-bin
 
-# Vulkan-first variant (Vulkan required)
+# Vulkan GPU variant (AMD/Intel/NVIDIA)
 paru -S openwhispr-vulkan
 ```
 
 ---
 
+## How the Vulkan package works
+
+`openwhispr-vulkan` does **not** modify the OpenWhispr source. Instead:
+
+1. It builds `whisper-server` from the [OpenWhispr/whisper.cpp](https://github.com/OpenWhispr/whisper.cpp) fork with `-DGGML_VULKAN=ON`.
+2. In `package()`, the Vulkan-built binary replaces `/opt/openwhispr/resources/bin/whisper-server-linux-x64`.
+3. The fork version (`_whisper_cpp_ver`) is pinned because OpenWhispr's GGML models are paired to a specific fork tag — using upstream `ggerganov/whisper.cpp` causes model incompatibility.
+
+---
+
 ## Automated updates (GitHub Actions)
 
-The workflow in [`.github/workflows/update-aur.yml`](.github/workflows/update-aur.yml) runs **daily at 08:00 UTC** and:
+The workflow in [`.github/workflows/update-aur.yml`](.github/workflows/update-aur.yml) runs **daily at 08:00 UTC** and checks the OpenWhispr release plus the OpenWhispr/whisper.cpp fork releases:
 
-1. Queries the GitHub Releases API for the latest `OpenWhispr/openwhispr` tag.
-2. Compares it with the `pkgver` tracked in this repository.
-3. If a new version is available:
-   - Updates `pkgver` and resets `pkgrel=1` in both PKGBUILDs.
-   - Runs `updpkgsums` to recalculate SHA-256 checksums.
-   - Regenerates `.SRCINFO` via `makepkg --printsrcinfo`.
-   - Pushes the updated files to each AUR repository via SSH.
-   - Commits the updated files back to this maintenance repository.
+1. **OpenWhispr main app** — checks the latest release tag (`pkgver`).
+2. **whisper.cpp fork** — resolves the correct fork tag (`_whisper_cpp_ver`) by date correlation: the latest fork release published on or before the OpenWhispr release date.
+
+If either version has changed:
+- `openwhispr-bin` is updated when the main app version changes.
+- `openwhispr-vulkan` is updated when either the main app or whisper.cpp fork version changes.
+- Checksums are recalculated via `updpkgsums` and `.SRCINFO` files regenerated.
+- Changes are pushed to each AUR repository via SSH, then committed back to this maintenance repository.
+
+The workflow now also performs a full Arch sync upgrade inside the update container and writes maintenance-repo commits as the unprivileged `builder` user to avoid ownership issues.
+
+---
+
+## Packaging notes
+
+- PKGBUILD metadata declares `license=('MIT')` to match upstream.
+- Packages copy license and notice files already present in the upstream Linux release artifact (`LICENSE*`, `LICENSES*`) into `/usr/share/licenses/$pkgname/` without synthesizing replacement license text.
+- The app bundles `ffmpeg-static`; system `ffmpeg` is not a hard dependency.
+- The upstream Linux wrapper forces XWayland under Wayland sessions for overlay positioning, so `libx11` remains a hard dependency even on Wayland systems.
 
 You can also trigger the workflow manually via **Actions → Update AUR Packages → Run workflow**.
 
@@ -78,7 +99,7 @@ This creates:
 ```
 openwhispr-aur/
 ├── .github/workflows/
-│   └── update-aur.yml        # Automated update workflow
+│   └── update-aur.yml            # Automated dual-upstream update workflow
 ├── openwhispr-bin/
 │   ├── PKGBUILD
 │   └── .SRCINFO

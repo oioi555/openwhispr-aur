@@ -12,3 +12,8 @@
 
 pkg/
 src/
+.opencode
+
+# OpenSpec: exclude active (unarchived) changes, keep archive/
+openspec/changes/*
+!openspec/changes/archive/

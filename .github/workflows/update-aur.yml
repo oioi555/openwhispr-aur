@@ -9,7 +9,6 @@ concurrency:
   group: aur-update
   cancel-in-progress: false
 
-# Allow the workflow to commit updated PKGBUILDs back to this repository
 permissions:
   contents: write
 
@@ -21,13 +20,18 @@ permissions:
 # -----------------------------------------------------------------------
 
 jobs:
-  # ── 1. Check whether an update is needed ─────────────────────────────
+  # ── 1. Check whether updates are needed ─────────────────────────────
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
-      needs_update:     ${{ steps.check.outputs.needs_update }}
-      upstream_version: ${{ steps.check.outputs.upstream_version }}
-      current_version:  ${{ steps.check.outputs.current_version }}
+      needs_update:           ${{ steps.check.outputs.needs_update }}
+      needs_update_app:       ${{ steps.check.outputs.needs_update_app }}
+      needs_update_whisper:   ${{ steps.check.outputs.needs_update_whisper }}
+      upstream_app_version:   ${{ steps.check.outputs.upstream_app_version }}
+      upstream_whisper_version: ${{ steps.check.outputs.upstream_whisper_version }}
+      current_app_version:    ${{ steps.check.outputs.current_app_version }}
+      current_whisper_version: ${{ steps.check.outputs.current_whisper_version }}
 
     steps:
       - name: Checkout repository
@@ -36,65 +40,120 @@ jobs:
       - name: Compare versions
         id: check
         run: |
+          set -euo pipefail
+
           fetch_with_retry() {
             local url="$1"
-            local max_attempts=3
-            local delay=5
-            for i in $(seq 1 $max_attempts); do
-              result=$(curl -fsSL \
-                --retry 2 --retry-delay 3 \
+            curl -fsSL \
+                --retry 3 --retry-delay 5 --retry-all-errors \
                 -H "Accept: application/vnd.github+json" \
                 -H "X-GitHub-Api-Version: 2022-11-28" \
-                "$url" 2>&1)
-              if [[ $? -eq 0 ]]; then
-                echo "$result"
-                return 0
-              fi
-              [[ $i -lt $max_attempts ]] && sleep $delay && delay=$((delay * 2))
-            done
-            return 1
+                "$url"
           }
 
-          UPSTREAM=$(fetch_with_retry \
-            "https://api.github.com/repos/OpenWhispr/openwhispr/releases/latest" \
-            | jq -r '.tag_name' | sed 's/^v//')
+          # --- 1. OpenWhispr main app version ---
+          APP_RELEASE=$(fetch_with_retry \
+            "https://api.github.com/repos/OpenWhispr/openwhispr/releases/latest")
+          UPSTREAM_APP=$(echo "$APP_RELEASE" | jq -r '.tag_name' | sed 's/^v//')
+          APP_PUBLISHED=$(echo "$APP_RELEASE" | jq -r '.published_at')
+          [[ "${UPSTREAM_APP}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::Unexpected OpenWhispr version format: ${UPSTREAM_APP}"
+            exit 1
+          }
 
-          if [[ -z "$UPSTREAM" || "$UPSTREAM" == "null" ]]; then
-            echo "::error::Failed to fetch upstream version"
+          if [[ -z "$UPSTREAM_APP" || "$UPSTREAM_APP" == "null" ]]; then
+            echo "::error::Failed to fetch upstream OpenWhispr version"
             exit 1
           fi
 
-          # Read the version from whichever PKGBUILD is tracked in this repo
-          CURRENT=$(grep '^pkgver=' openwhispr-bin/PKGBUILD | cut -d= -f2)
+          # --- 2. whisper.cpp fork version (date correlation) ---
+          # OpenWhispr currently does not expose a pinned WHISPER_CPP_VERSION
+          # in release metadata, so the compatible fork tag is inferred as the
+          # latest OpenWhispr/whisper.cpp release published no later than the
+          # selected OpenWhispr app release.
+          FORK_RELEASES=$(fetch_with_retry \
+            "https://api.github.com/repos/OpenWhispr/whisper.cpp/releases?per_page=100")
 
-          echo "upstream_version=${UPSTREAM}" >> "$GITHUB_OUTPUT"
-          echo "current_version=${CURRENT}"   >> "$GITHUB_OUTPUT"
-          echo "Upstream: ${UPSTREAM} | This repo: ${CURRENT}"
+          # Find the latest fork release published on or before the app release date
+          UPSTREAM_WHISPER=$(echo "$FORK_RELEASES" \
+            | jq -r --arg app_date "$APP_PUBLISHED" \
+              'sort_by(.published_at) | reverse | .[] | select(.published_at <= $app_date) | .tag_name' \
+            | head -n1)
 
-          if [[ "$CURRENT" == "$UPSTREAM" ]]; then
-            echo "needs_update=false" >> "$GITHUB_OUTPUT"
-            echo "## ⏭️ No update needed — already at ${UPSTREAM}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -z "$UPSTREAM_WHISPER" || "$UPSTREAM_WHISPER" == "null" ]]; then
+            echo "::error::Failed to resolve whisper.cpp fork version"
+            exit 1
+          fi
+          [[ "${UPSTREAM_WHISPER}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::Unexpected whisper.cpp version format: ${UPSTREAM_WHISPER}"
+            exit 1
+          }
+
+          # --- 3. Read current versions from PKGBUILDs ---
+          CURRENT_APP=$(grep '^pkgver=' openwhispr-bin/PKGBUILD | cut -d= -f2)
+          CURRENT_WHISPER=$(grep '^_whisper_cpp_ver=' openwhispr-vulkan/PKGBUILD | cut -d= -f2)
+
+          # --- 4. Compare ---
+          if [[ "$CURRENT_APP" == "$UPSTREAM_APP" ]]; then
+            NEEDS_APP="false"
           else
-            echo "needs_update=true" >> "$GITHUB_OUTPUT"
-            echo "## 🔄 Update available: ${CURRENT} → ${UPSTREAM}" >> "$GITHUB_STEP_SUMMARY"
+            NEEDS_APP="true"
           fi
 
-  # ── 2. Update both packages ───────────────────────────────────────────
+          if [[ "$CURRENT_WHISPER" == "$UPSTREAM_WHISPER" ]]; then
+            NEEDS_WHISPER="false"
+          else
+            NEEDS_WHISPER="true"
+          fi
+
+          if [[ "$NEEDS_APP" == "true" || "$NEEDS_WHISPER" == "true" ]]; then
+            NEEDS_UPDATE="true"
+          else
+            NEEDS_UPDATE="false"
+          fi
+
+          # --- 5. Outputs ---
+          echo "upstream_app_version=${UPSTREAM_APP}"       >> "$GITHUB_OUTPUT"
+          echo "upstream_whisper_version=${UPSTREAM_WHISPER}" >> "$GITHUB_OUTPUT"
+          echo "current_app_version=${CURRENT_APP}"          >> "$GITHUB_OUTPUT"
+          echo "current_whisper_version=${CURRENT_WHISPER}"  >> "$GITHUB_OUTPUT"
+          echo "needs_update_app=${NEEDS_APP}"               >> "$GITHUB_OUTPUT"
+          echo "needs_update_whisper=${NEEDS_WHISPER}"       >> "$GITHUB_OUTPUT"
+          echo "needs_update=${NEEDS_UPDATE}"                >> "$GITHUB_OUTPUT"
+
+          echo "OpenWhispr: ${CURRENT_APP} → ${UPSTREAM_APP} (${NEEDS_APP})"
+          echo "whisper.cpp: ${CURRENT_WHISPER} → ${UPSTREAM_WHISPER} (${NEEDS_WHISPER})"
+
+          # --- 6. Step summary ---
+          echo "## Version Check Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Component | Current | Upstream | Update? |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| OpenWhispr | ${CURRENT_APP} | ${UPSTREAM_APP} | ${NEEDS_APP} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| whisper.cpp fork | ${CURRENT_WHISPER} | ${UPSTREAM_WHISPER} | ${NEEDS_WHISPER} |" >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$NEEDS_UPDATE" == "false" ]]; then
+            echo "## ⏭️ No update needed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ── 2. Update packages ───────────────────────────────────────────────
   update:
     needs: check
     if: needs.check.outputs.needs_update == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     container:
       image: archlinux:latest
 
     steps:
       - name: Install dependencies
         run: |
-          pacman -Sy --noconfirm \
+          set -euo pipefail
+          pacman -Syu --noconfirm \
             git pacman-contrib openssh sudo curl jq
 
       - name: Set up unprivileged builder user
         run: |
+          set -euo pipefail
           useradd -m -s /bin/bash builder
           echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
           mkdir -p /home/builder/.ssh
@@ -105,11 +164,11 @@ jobs:
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
         run: |
+          set -euo pipefail
           printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > /home/builder/.ssh/aur_key
           chmod 600 /home/builder/.ssh/aur_key
           chown builder:builder /home/builder/.ssh/aur_key
 
-          # AUR host key (ed25519)
           echo "aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN" \
             >> /home/builder/.ssh/known_hosts
 
@@ -127,36 +186,41 @@ jobs:
 
       - name: Configure git identity
         run: |
+          set -euo pipefail
           git -C /home/builder/repo config user.name  "AUR Update Bot"
           git -C /home/builder/repo config user.email "bot@users.noreply.github.com"
           chown -R builder:builder /home/builder/repo
 
-      # ── Helper: update one package directory ──────────────────────────
-      # Usage: update_pkg <dir> <aur-package-name> <new-version>
+      # ── Update openwhispr-bin (app version only) ────────────────────
       - name: Update openwhispr-bin
+        if: needs.check.outputs.needs_update_app == 'true'
         env:
-          NEW_VER: ${{ needs.check.outputs.upstream_version }}
+          NEW_APP_VER: ${{ needs.check.outputs.upstream_app_version }}
         run: |
           set -euo pipefail
           PKG_DIR=/home/builder/repo/openwhispr-bin
           AUR_PKG=openwhispr-bin
 
-          # 1. Bump version in this repo's PKGBUILD
+          # 1. Bump pkgver in PKGBUILD
+          [[ "${NEW_APP_VER}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::Invalid app version format: ${NEW_APP_VER}"
+            exit 1
+          }
           sed -i \
-            "s/^pkgver=.*/pkgver=${NEW_VER}/; s/^pkgrel=.*/pkgrel=1/" \
+            "s|^pkgver=.*|pkgver=${NEW_APP_VER}|; s|^pkgrel=.*|pkgrel=1|" \
             "${PKG_DIR}/PKGBUILD"
           chown builder:builder "${PKG_DIR}/PKGBUILD"
 
           # 2. Recalculate checksums + regenerate .SRCINFO
           sudo -u builder bash -c "cd '${PKG_DIR}' && updpkgsums && makepkg --printsrcinfo > .SRCINFO"
 
-          # 3. Clone the AUR package, apply the same changes, push
+          # 3. Clone AUR repo, apply changes, push
           sudo -u builder git clone \
             "ssh://aur@aur.archlinux.org/${AUR_PKG}.git" \
             /home/builder/aur-${AUR_PKG}
 
-          cp "${PKG_DIR}/PKGBUILD"  /home/builder/aur-${AUR_PKG}/PKGBUILD
-          cp "${PKG_DIR}/.SRCINFO"  /home/builder/aur-${AUR_PKG}/.SRCINFO
+          cp "${PKG_DIR}/PKGBUILD"           /home/builder/aur-${AUR_PKG}/PKGBUILD
+          cp "${PKG_DIR}/.SRCINFO"           /home/builder/aur-${AUR_PKG}/.SRCINFO
 
           AUR_DIR=/home/builder/aur-${AUR_PKG}
           sudo -u builder git -C "${AUR_DIR}" config user.name  "AUR Update Bot"
@@ -164,38 +228,62 @@ jobs:
           sudo -u builder git -C "${AUR_DIR}" add PKGBUILD .SRCINFO
 
           if sudo -u builder git -C "${AUR_DIR}" diff --cached --quiet; then
-            echo "AUR ${AUR_PKG} already at ${NEW_VER}, nothing to push"
+            echo "AUR ${AUR_PKG} already at ${NEW_APP_VER}, nothing to push"
+            echo "⏭️ openwhispr-bin already at ${NEW_APP_VER}" >> "$GITHUB_STEP_SUMMARY"
           else
-            sudo -u builder git -C "${AUR_DIR}" commit -m "upgpkg: ${NEW_VER}"
+            sudo -u builder git -C "${AUR_DIR}" commit -m "upgpkg: ${NEW_APP_VER}"
             sudo -u builder git -C "${AUR_DIR}" push
+            echo "✅ openwhispr-bin updated to ${NEW_APP_VER}" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          echo "✅ openwhispr-bin updated to ${NEW_VER}" >> "$GITHUB_STEP_SUMMARY"
-
+      # ── Update openwhispr-vulkan (app +/or whisper.cpp) ─────────────
       - name: Update openwhispr-vulkan
+        if: needs.check.outputs.needs_update_app == 'true' || needs.check.outputs.needs_update_whisper == 'true'
         env:
-          NEW_VER: ${{ needs.check.outputs.upstream_version }}
+          NEW_APP_VER: ${{ needs.check.outputs.upstream_app_version }}
+          NEW_WHISPER_VER: ${{ needs.check.outputs.upstream_whisper_version }}
+          NEEDS_APP: ${{ needs.check.outputs.needs_update_app }}
+          NEEDS_WHISPER: ${{ needs.check.outputs.needs_update_whisper }}
         run: |
           set -euo pipefail
           PKG_DIR=/home/builder/repo/openwhispr-vulkan
           AUR_PKG=openwhispr-vulkan
 
-          # 1. Bump version in this repo's PKGBUILD
-          sed -i \
-            "s/^pkgver=.*/pkgver=${NEW_VER}/; s/^pkgrel=.*/pkgrel=1/" \
-            "${PKG_DIR}/PKGBUILD"
+          # 1. Bump pkgver if app version changed
+          if [[ "$NEEDS_APP" == "true" ]]; then
+            [[ "${NEW_APP_VER}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+              echo "::error::Invalid app version format: ${NEW_APP_VER}"
+              exit 1
+            }
+            sed -i \
+              "s|^pkgver=.*|pkgver=${NEW_APP_VER}|; s|^pkgrel=.*|pkgrel=1|" \
+              "${PKG_DIR}/PKGBUILD"
+            echo "  -> Bumped pkgver to ${NEW_APP_VER}"
+          fi
+
+          # 2. Bump _whisper_cpp_ver if fork version changed
+          if [[ "$NEEDS_WHISPER" == "true" ]]; then
+            [[ "${NEW_WHISPER_VER}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+              echo "::error::Invalid whisper.cpp version format: ${NEW_WHISPER_VER}"
+              exit 1
+            }
+            sed -i "s|^_whisper_cpp_ver=.*|_whisper_cpp_ver=${NEW_WHISPER_VER}|" \
+              "${PKG_DIR}/PKGBUILD"
+            echo "  -> Bumped _whisper_cpp_ver to ${NEW_WHISPER_VER}"
+          fi
+
           chown builder:builder "${PKG_DIR}/PKGBUILD"
 
-          # 2. Recalculate checksums + regenerate .SRCINFO
+          # 3. Recalculate checksums + regenerate .SRCINFO
           sudo -u builder bash -c "cd '${PKG_DIR}' && updpkgsums && makepkg --printsrcinfo > .SRCINFO"
 
-          # 3. Clone the AUR package, apply the same changes, push
+          # 4. Clone AUR repo, apply changes, push
           sudo -u builder git clone \
             "ssh://aur@aur.archlinux.org/${AUR_PKG}.git" \
             /home/builder/aur-${AUR_PKG}
 
-          cp "${PKG_DIR}/PKGBUILD"  /home/builder/aur-${AUR_PKG}/PKGBUILD
-          cp "${PKG_DIR}/.SRCINFO"  /home/builder/aur-${AUR_PKG}/.SRCINFO
+          cp "${PKG_DIR}/PKGBUILD"                    /home/builder/aur-${AUR_PKG}/PKGBUILD
+          cp "${PKG_DIR}/.SRCINFO"                    /home/builder/aur-${AUR_PKG}/.SRCINFO
 
           AUR_DIR=/home/builder/aur-${AUR_PKG}
           sudo -u builder git -C "${AUR_DIR}" config user.name  "AUR Update Bot"
@@ -203,19 +291,31 @@ jobs:
           sudo -u builder git -C "${AUR_DIR}" add PKGBUILD .SRCINFO
 
           if sudo -u builder git -C "${AUR_DIR}" diff --cached --quiet; then
-            echo "AUR ${AUR_PKG} already at ${NEW_VER}, nothing to push"
+            echo "AUR ${AUR_PKG} already up to date, nothing to push"
+            echo "⏭️ openwhispr-vulkan already up to date" >> "$GITHUB_STEP_SUMMARY"
           else
-            sudo -u builder git -C "${AUR_DIR}" commit -m "upgpkg: ${NEW_VER}"
+            COMMIT_MSG="upgpkg: openwhispr ${NEW_APP_VER}"
+            [[ "$NEEDS_WHISPER" == "true" ]] && COMMIT_MSG="${COMMIT_MSG}, whisper.cpp ${NEW_WHISPER_VER}"
+            sudo -u builder git -C "${AUR_DIR}" commit -m "${COMMIT_MSG}"
             sudo -u builder git -C "${AUR_DIR}" push
+            echo "✅ openwhispr-vulkan updated (app: ${NEW_APP_VER}, whisper.cpp: ${NEW_WHISPER_VER})" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          echo "✅ openwhispr-vulkan updated to ${NEW_VER}" >> "$GITHUB_STEP_SUMMARY"
-
-      # ── Commit the updated PKGBUILDs back to this maintenance repo ────
+      # ── Commit updated files to this maintenance repo ───────────────
       - name: Commit & push changes to this repository
         env:
-          NEW_VER: ${{ needs.check.outputs.upstream_version }}
+          NEW_APP_VER: ${{ needs.check.outputs.upstream_app_version }}
+          NEW_WHISPER_VER: ${{ needs.check.outputs.upstream_whisper_version }}
+          NEEDS_APP: ${{ needs.check.outputs.needs_update_app }}
+          NEEDS_WHISPER: ${{ needs.check.outputs.needs_update_whisper }}
         run: |
+          set -euo pipefail
+          sudo -u builder env \
+            NEW_APP_VER="${NEW_APP_VER}" \
+            NEW_WHISPER_VER="${NEW_WHISPER_VER}" \
+            NEEDS_APP="${NEEDS_APP}" \
+            NEEDS_WHISPER="${NEEDS_WHISPER}" \
+            bash -c '
           cd /home/builder/repo
 
           git add \
@@ -225,8 +325,13 @@ jobs:
           if git diff --cached --quiet; then
             echo "Nothing new to commit to the maintenance repo"
           else
-            git commit -m "chore: bump both packages to ${NEW_VER}"
+            COMMIT_MSG="chore: bump openwhispr to ${NEW_APP_VER}"
+            [[ "$NEEDS_WHISPER" == "true" ]] && COMMIT_MSG="${COMMIT_MSG}, whisper.cpp to ${NEW_WHISPER_VER}"
+            git commit -m "${COMMIT_MSG}"
             git push
           fi
+          '
 
-          echo "## ✅ Both packages updated to **${NEW_VER}**" >> "$GITHUB_STEP_SUMMARY"
+          echo "## ✅ Packages updated" >> "$GITHUB_STEP_SUMMARY"
+          echo "- OpenWhispr: ${NEW_APP_VER}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- whisper.cpp fork: ${NEW_WHISPER_VER}" >> "$GITHUB_STEP_SUMMARY"

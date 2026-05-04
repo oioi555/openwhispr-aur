@@ -1,0 +1,39 @@
+schema: spec-driven
+
+context: |
+  AUR (Arch User Repository) maintenance repository for OpenWhispr packages.
+  OpenWhispr is an Electron-based voice-to-text dictation app that uses
+  a forked whisper.cpp for local inference.
+
+  Tech stack:
+    - PKGBUILD / makepkg (Arch Linux packaging)
+    - GitHub Actions CI (daily upstream monitoring + AUR publish)
+    - Two AUR packages: openwhispr-bin (CPU) and openwhispr-vulkan (GPU)
+
+  Key domain knowledge:
+    - openwhispr-vulkan replaces the bundled CPU whisper-server with a
+      Vulkan GPU build compiled from OpenWhispr/whisper.cpp fork.
+    - The fork tag (currently 0.0.6 ≈ upstream v1.8.3) must match the
+      GGML model version OpenWhispr downloads. Using upstream
+      ggerganov/whisper.cpp causes "failed to read audio data" errors.
+    - Both packages provides=('openwhispr') and conflict with each other.
+
+  Upstream repositories:
+    - Main app: https://github.com/OpenWhispr/openwhispr
+    - whisper.cpp fork: https://github.com/OpenWhispr/whisper.cpp
+
+  Conventions:
+    - Conventional commits (feat:, fix:, chore:, etc.)
+    - Maintainer: oioi555
+    - Japanese comments in documentation are acceptable
+
+rules:
+  proposal:
+    - Keep proposals under 500 words
+    - Always include a "Non-goals" section
+  specs:
+    - Use Scenario format (WHEN/THEN) for all requirements
+    - Distinguish hard dependencies from optional dependencies
+  tasks:
+    - Break tasks into chunks of max 2 hours
+    - Each task must reference the spec requirement it fulfills
