@@ -1,7 +1,5 @@
-## Purpose
+## MODIFIED Requirements
 
-Define the GitHub Actions workflow that detects upstream OpenWhispr and whisper.cpp fork updates, updates AUR package metadata, and reports results without performing full package or runtime validation.
-## Requirements
 ### Requirement: Scheduled and manual triggering
 
 The CI workflow MUST support both automatic and manual execution.
@@ -28,33 +26,6 @@ The CI workflow MUST support both automatic and manual execution.
 - **WHEN** a workflow is already running
 - **THEN** a new triggered run waits (does not cancel the in-progress run)
 - **AND** this applies to both scheduled and force-sync runs (single `concurrency.group: aur-update`)
-
----
-
-### Requirement: Version check job
-
-A `check` job MUST determine whether updates are needed.
-
-#### Scenario: API queries with retry
-- **WHEN** the check job queries GitHub Releases API
-- **THEN** it retries failed requests
-- **AND** it queries `OpenWhispr/openwhispr` for the selected app release
-- **AND** it queries `OpenWhispr/whisper.cpp` releases to resolve the compatible fork tag by date correlation
-
-#### Scenario: Parsed versions are validated
-- **WHEN** upstream version strings are extracted from API responses
-- **THEN** the workflow validates the expected semantic version format
-- **AND** it emits a clear error message before exiting if parsing fails
-
-#### Scenario: Version extraction
-- **WHEN** API responses are received
-- **THEN** the OpenWhispr version has `v` prefix stripped
-- **AND** the whisper.cpp fork version is resolved via date correlation: the latest `OpenWhispr/whisper.cpp` release where `published_at ≤ OpenWhispr release date`
-- **AND** both are compared against current PKGBUILD values
-
-#### Scenario: Output flags
-- **WHEN** version comparison completes
-- **THEN** the job outputs: `upstream_app_version`, `upstream_whisper_version`, `current_app_version`, `current_whisper_version`, `needs_update_app`, `needs_update_whisper`, `needs_update`
 
 ---
 
@@ -143,4 +114,3 @@ Each workflow run MUST produce a GitHub Actions step summary.
 #### Scenario: Error reporting
 - **WHEN** an API query fails after all retries
 - **THEN** the workflow fails with a clear error message in the step summary
-
