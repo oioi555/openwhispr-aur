@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '0 8 * * *'   # daily at 08:00 UTC
   workflow_dispatch:
+    inputs:
+      force_sync:
+        description: 'Force-sync maintenance repo PKGBUILD/.SRCINFO to AUR regardless of version check (use after structural edits like dependency additions or patches)'
+        type: boolean
+        default: false
 
 concurrency:
   group: aur-update
@@ -138,7 +143,7 @@ jobs:
   # ── 2. Update packages ───────────────────────────────────────────────
   update:
     needs: check
-    if: needs.check.outputs.needs_update == 'true'
+    if: needs.check.outputs.needs_update == 'true' || inputs.force_sync == true
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -193,6 +198,10 @@ jobs:
           git -C "${REPO_DIR}" config user.name  "AUR Update Bot"
           git -C "${REPO_DIR}" config user.email "bot@users.noreply.github.com"
           chown -R builder:builder "${REPO_DIR}"
+
+      - name: Mark force sync in step summary
+        if: ${{ inputs.force_sync == true }}
+        run: echo "## 🔄 Force sync triggered" >> "$GITHUB_STEP_SUMMARY"
 
       # ── Update openwhispr-bin (app version only) ────────────────────
       - name: Update openwhispr-bin
