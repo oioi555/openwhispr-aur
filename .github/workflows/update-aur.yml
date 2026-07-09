@@ -205,7 +205,7 @@ jobs:
 
       # ── Update openwhispr-bin (app version only) ────────────────────
       - name: Update openwhispr-bin
-        if: needs.check.outputs.needs_update_app == 'true'
+        if: needs.check.outputs.needs_update_app == 'true' || inputs.force_sync == true
         env:
           NEW_APP_VER: ${{ needs.check.outputs.upstream_app_version }}
         run: |
@@ -250,7 +250,7 @@ jobs:
 
       # ── Update openwhispr-vulkan (app +/or whisper.cpp) ─────────────
       - name: Update openwhispr-vulkan
-        if: needs.check.outputs.needs_update_app == 'true' || needs.check.outputs.needs_update_whisper == 'true'
+        if: needs.check.outputs.needs_update_app == 'true' || needs.check.outputs.needs_update_whisper == 'true' || inputs.force_sync == true
         env:
           NEW_APP_VER: ${{ needs.check.outputs.upstream_app_version }}
           NEW_WHISPER_VER: ${{ needs.check.outputs.upstream_whisper_version }}
